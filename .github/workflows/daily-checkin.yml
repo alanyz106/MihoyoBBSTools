@@ -29,6 +29,34 @@ jobs:
           CONFIG_YAML: ${{ secrets.CONFIG_YAML }}
 
       - name: Run checkin
+        id: checkin
         env:
           GITHUB_ACTIONS: "false"
-        run: python main.py
+        run: |
+          set +e
+          python main.py 2>&1 | tee output.log
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          cat output.log >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Push result via wxpusher
+        if: always()
+        env:
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UIDS: ${{ secrets.WXPUSHER_UIDS }}
+        run: |
+          RESULT=$(cat output.log | grep -E 'INFO|ERROR|WARNING|签到|米游币|奖励|旅行者' | sed 's/^[0-9-]*T[0-9:.]*Z //' | sed 's/^[0-9-]* [0-9:]* //')
+          if [ -z "$RESULT" ]; then
+            RESULT=$(cat output.log)
+          fi
+          # 转义 JSON 特殊字符
+          RESULT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+          curl -s -X POST "https://wxpusher.zjiecode.com/api/send/message" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"appToken\": \"$WXPUSHER_APP_TOKEN\",
+              \"content\": $RESULT,
+              \"summary\": \"米游社签到结果\",
+              \"contentType\": 1,
+              \"uids\": [\"$WXPUSHER_UIDS\"]
+            }"
