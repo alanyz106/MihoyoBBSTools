@@ -29,13 +29,8 @@ def is_module_imported(module_name):
 
 def get_new_session_use_proxy(http_proxy: str):
     if is_module_imported("httpx"):
-        proxies = {
-            "http://": f'http://{http_proxy}',
-            "https://": f'http://{http_proxy}'
-        }
-        return get_new_session(proxies=proxies)
-        # httpx 版本大于0.26.0可用
-        # return get_new_session(proxy=f'http://{http_proxy}')
+        # httpx >= 0.26 使用 proxy（单数）参数
+        return get_new_session(proxy=f'http://{http_proxy}')
     else:
         session = get_new_session()
         session.proxies = {

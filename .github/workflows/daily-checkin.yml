@@ -32,6 +32,8 @@ jobs:
         id: checkin
         env:
           GITHUB_ACTIONS: "false"
+          CAPTCHA_PROVIDER: ${{ secrets.CAPTCHA_PROVIDER }}
+          CAPTCHA_API_KEY: ${{ secrets.CAPTCHA_API_KEY }}
         run: |
           set +e
           python main.py 2>&1 | tee output.log
