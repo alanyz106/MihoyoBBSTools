@@ -177,7 +177,7 @@ class Mihoyobbs:
             challenge = None
             for retry_count in range(2):
                 post_data = json.dumps({"gids": forum["id"]})
-                post_data.replace(' ', '')
+                post_data = post_data.replace(' ', '')
                 header["DS"] = tools.get_ds2("", post_data)
                 req = http.post(url=setting.bbs_sign_url, data=post_data, headers=header)
                 log.debug(req.text)
@@ -187,8 +187,15 @@ class Mihoyobbs:
                     challenge = self.get_pass_challenge()
                     if challenge is not None:
                         header["x-rpc-challenge"] = challenge
+                        log.info(f"{forum['name']} 验证码已通过，重新提交签到...")
+                        continue  # 用新 challenge 重新请求，不增加 retry_count
+                    else:
+                        log.warning(f"{forum['name']} 验证码处理失败，重试...")
+                        continue
                 elif "err" not in data["message"] and data["retcode"] == 0:
                     log.info(str(forum["name"] + data["message"]))
+                    if "x-rpc-challenge" in header:
+                        header.pop("x-rpc-challenge")
                     wait()
                     break
                 elif data["retcode"] == -100:
@@ -197,7 +204,7 @@ class Mihoyobbs:
                     raise StokenError('Stoken expires')
                 else:
                     log.error(f'未知错误：{req.text}')
-            if challenge is not None:
+            if challenge is not None and "x-rpc-challenge" in header:
                 header.pop("x-rpc-challenge")
 
     # 看帖子
