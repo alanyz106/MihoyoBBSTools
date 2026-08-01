@@ -1,5 +1,7 @@
+import json
 import os
 import time
+from datetime import datetime
 
 import httpx
 
@@ -10,10 +12,69 @@ TWOCAPTCHA_API_URL = "https://api.2captcha.com"
 POLL_INTERVAL = 2
 MAX_POLL_TIME = 120
 
+CAPTCHA_TYPE_MAP = {
+    "slide": "滑块验证",
+    "click": "点选验证",
+    "fullpage": "弹窗验证",
+    "voice": "语音验证",
+    "beeline": "轨迹验证",
+    "unknown": "未知",
+}
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "log")
+CAPTCHA_RECORD_FILE = os.path.join(LOG_DIR, "captcha_record.log")
+
 
 def _get_provider() -> str:
     """获取验证码提供商配置，环境变量 CAPTCHA_PROVIDER: capsolver / 2captcha / 其他(跳过)"""
     return os.getenv("CAPTCHA_PROVIDER", "").strip().lower()
+
+
+def get_geetest_type(gt: str) -> str:
+    """
+    通过极验 gettype.php 接口查询验证码类型
+
+    :param gt: 极验的 gt 参数
+    :return: slide / click / fullpage 等类型，失败时返回 unknown
+    """
+    try:
+        client = httpx.Client(timeout=15)
+        resp = client.get(f"https://api.geetest.com/gettype.php?gt={gt}",
+                          headers={"User-Agent": "Mozilla/5.0"})
+        text = resp.text.strip()
+        # 接口返回 JSONP 格式: ({"status": "success", "data": {...}})
+        if text.startswith("(") and text.endswith(")"):
+            text = text[1:-1]
+        data = json.loads(text)
+        if data.get("status") == "success":
+            return data.get("data", {}).get("type", "unknown")
+        return "unknown"
+    except Exception as e:
+        log.warning(f"获取验证码类型失败: {e}")
+        return "unknown"
+    finally:
+        client.close()
+
+
+def record_captcha_type(gt: str, scene: str) -> str:
+    """
+    查询并记录验证码类型，追加到 log/captcha_record.log，同时写入运行日志
+
+    :param gt: 极验 gt 参数
+    :param scene: 场景标识，如 game/bbs
+    :return: 类型名称（slide/click 等）
+    """
+    captcha_type = get_geetest_type(gt)
+    type_name = CAPTCHA_TYPE_MAP.get(captcha_type, captcha_type)
+    log.info(f"验证码类型记录: 场景={scene} 类型={type_name} ({captcha_type})")
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(CAPTCHA_RECORD_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})\n")
+    except Exception as e:
+        log.warning(f"写入验证码类型记录失败: {e}")
+    return captcha_type
 
 
 def _solve_via_capsolver(gt: str, challenge: str, page_url: str):
@@ -150,6 +211,7 @@ def _solve_via_2captcha(gt: str, challenge: str, page_url: str):
 
 def game_captcha(gt: str, challenge: str) -> dict:
     """解决游戏签到的 GeeTest 验证码"""
+    record_captcha_type(gt, "game")
     provider = _get_provider()
     if provider == "capsolver":
         return _solve_via_capsolver(gt, challenge, "https://act.mihoyo.com/")
@@ -160,6 +222,7 @@ def game_captcha(gt: str, challenge: str) -> dict:
 
 def bbs_captcha(gt: str, challenge: str) -> dict:
     """解决米游社社区操作的 GeeTest 验证码"""
+    record_captcha_type(gt, "bbs")
     provider = _get_provider()
     if provider == "capsolver":
         return _solve_via_capsolver(gt, challenge, "https://www.miyoushe.com/")
