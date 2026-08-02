@@ -30,12 +30,12 @@ def _get_provider() -> str:
     return os.getenv("CAPTCHA_PROVIDER", "").strip().lower()
 
 
-def get_geetest_type(gt: str) -> str:
+def get_geetest_detail(gt: str) -> dict:
     """
-    通过极验 gettype.php 接口查询验证码类型
+    通过极验 gettype.php 接口查询验证码的完整原始数据
 
     :param gt: 极验的 gt 参数
-    :return: slide / click / fullpage 等类型，失败时返回 unknown
+    :return: data dict（含 type / slide / click / fullpage JS 路径等），失败时返回 {}
     """
     try:
         client = httpx.Client(timeout=15)
@@ -47,13 +47,24 @@ def get_geetest_type(gt: str) -> str:
             text = text[1:-1]
         data = json.loads(text)
         if data.get("status") == "success":
-            return data.get("data", {}).get("type", "unknown")
-        return "unknown"
+            return data.get("data", {})
+        log.warning(f"gettype 返回异常: {data}")
+        return {}
     except Exception as e:
         log.warning(f"获取验证码类型失败: {e}")
-        return "unknown"
+        return {}
     finally:
         client.close()
+
+
+def get_geetest_type(gt: str) -> str:
+    """
+    通过极验 gettype.php 接口查询验证码类型
+
+    :param gt: 极验的 gt 参数
+    :return: slide / click / fullpage 等类型，失败时返回 unknown
+    """
+    return (get_geetest_detail(gt) or {}).get("type", "unknown")
 
 
 def record_captcha_type(gt: str, scene: str) -> str:
@@ -64,14 +75,19 @@ def record_captcha_type(gt: str, scene: str) -> str:
     :param scene: 场景标识，如 game/bbs
     :return: 类型名称（slide/click 等）
     """
-    captcha_type = get_geetest_type(gt)
+    detail = get_geetest_detail(gt)
+    captcha_type = detail.get("type", "unknown")
     type_name = CAPTCHA_TYPE_MAP.get(captcha_type, captcha_type)
+    script_names = {k: v for k, v in detail.items() if isinstance(v, str) and ("." in v)}
     log.info(f"验证码类型记录: 场景={scene} 类型={type_name} ({captcha_type})")
+    if script_names:
+        log.info(f"验证码接口脚本: {json.dumps(script_names, ensure_ascii=False)}")
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(CAPTCHA_RECORD_FILE, "a", encoding="utf-8") as f:
             f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})\n")
+            f.write(f"    详细数据: {json.dumps(detail, ensure_ascii=False)}\n")
     except Exception as e:
         log.warning(f"写入验证码类型记录失败: {e}")
     return captcha_type
@@ -122,10 +138,16 @@ def _solve_via_capsolver(gt: str, challenge: str, page_url: str):
 
             if poll_data.get("status") == "ready":
                 solution = poll_data["solution"]
-                log.info("验证码已解决")
+                keys = sorted(solution.keys())
+                has_v3 = "validate" in solution or "seccode" in solution
+                api_version = "v3" if has_v3 else ("v4" if any(
+                    k in solution for k in ("lot_number", "pass_token", "captcha_output")
+                ) else "未知")
+                log.info(f"验证码已解决: 极验接口={api_version} solution字段={keys}")
+                validate = solution.get("validate", "") or solution.get("pass_token", "") or ""
                 return {
                     "challenge": solution.get("challenge", challenge),
-                    "validate": solution["validate"]
+                    "validate": validate
                 }
             elif poll_data.get("status") in ("processing", "idle"):
                 continue
@@ -188,10 +210,16 @@ def _solve_via_2captcha(gt: str, challenge: str, page_url: str):
 
             if poll_data.get("status") == "ready":
                 solution = poll_data["solution"]
-                log.info("验证码已解决")
+                keys = sorted(solution.keys())
+                has_v3 = "validate" in solution or "seccode" in solution
+                api_version = "v3" if has_v3 else ("v4" if any(
+                    k in solution for k in ("lot_number", "pass_token", "captcha_output")
+                ) else "未知")
+                log.info(f"验证码已解决: 极验接口={api_version} solution字段={keys}")
+                validate = solution.get("validate", "") or solution.get("pass_token", "") or ""
                 return {
                     "challenge": solution.get("challenge", challenge),
-                    "validate": solution["validate"]
+                    "validate": validate
                 }
             elif poll_data.get("status") == "processing":
                 continue
