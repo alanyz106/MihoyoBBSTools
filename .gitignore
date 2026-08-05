@@ -152,3 +152,7 @@ yaml/
 
 # Nix 编译输出
 result/
+
+# AI 协作本地目录（项目主题记忆、工作区缓存），不进仓库
+memory/
+.workbuddy/
