@@ -125,6 +125,9 @@ def record_captcha_type(gt: str, scene: str, challenge: str = "") -> str:
     """
     查询并记录验证码类型，追加到 log/captcha_record.log，同时写入运行日志
 
+    推送消息里只输出一行摘要（呈现模式 + 具体形式），详细 JSON 数据降到 debug
+    级别并写入本地 log/captcha_record.log，避免 wxpusher 推送过长。
+
     :param gt: 极验 gt 参数
     :param scene: 场景标识，如 game/bbs
     :param challenge: 本次会话的 challenge（可选；传入会额外查询 get.php 拿具体
@@ -134,29 +137,39 @@ def record_captcha_type(gt: str, scene: str, challenge: str = "") -> str:
     detail = get_geetest_detail(gt)
     captcha_type = detail.get("type", "unknown")
     type_name = CAPTCHA_TYPE_MAP.get(captcha_type, captcha_type)
-    script_names = {k: v for k, v in detail.items() if isinstance(v, str) and ("." in v)}
-    log.info(f"验证码类型记录: 场景={scene} 类型={type_name} ({captcha_type})")
-    if script_names:
-        log.info(f"验证码接口脚本: {json.dumps(script_names, ensure_ascii=False)}")
 
     # 传入 challenge 时额外查询 get.php，拿本次会话的具体验证形式
     session_detail = {}
+    s_value = ""
+    s_name = ""
     if challenge:
         session_detail = get_geetest_session_detail(gt, challenge)
         if session_detail:
             s_value = session_detail.get("s", "")
             s_name = GEETEST_S_MAP.get(s_value, s_value)
-            log.info(f"验证码具体形式: s={s_value} ({s_name})")
-            key_fields = {k: v for k, v in session_detail.items()
-                          if k in ("s", "pic", "auxiliary", "tip", "mode", "type", "result")}
-            if key_fields:
-                log.info(f"验证码会话关键字段: {json.dumps(key_fields, ensure_ascii=False)}")
 
+    # 推送摘要：一行展示呈现模式 + 具体形式（fullpage 模式下能区分滑块/点选）
+    summary = f"验证码类型: {scene}场景 → {type_name}({captcha_type})"
+    if s_value:
+        summary += f" → {s_name}({s_value})"
+    log.info(summary)
+
+    # 详细数据降级到 debug，避免推送消息过长（loghelper 默认 INFO 级别，debug 不进推送）
+    script_names = {k: v for k, v in detail.items() if isinstance(v, str) and ("." in v)}
+    if script_names:
+        log.debug(f"验证码接口脚本: {json.dumps(script_names, ensure_ascii=False)}")
+    if session_detail:
+        log.debug(f"验证码 get.php 会话数据: {json.dumps(session_detail, ensure_ascii=False)}")
+
+    # 完整数据仍写入本地 log/captcha_record.log（*.log 已被 gitignore，不进仓库）
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(CAPTCHA_RECORD_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})\n")
+            f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})")
+            if s_value:
+                f.write(f" 具体形式={s_value} ({s_name})")
+            f.write("\n")
             f.write(f"    gettype 数据: {json.dumps(detail, ensure_ascii=False)}\n")
             if session_detail:
                 f.write(f"    get.php 会话数据: {json.dumps(session_detail, ensure_ascii=False)}\n")
