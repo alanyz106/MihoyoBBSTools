@@ -1,8 +1,9 @@
 # CV 破解可选依赖（geetest_cv 模块）
 # 仅在启用 GEETEST_CV_ENABLE=1 时需要安装
 # 安装：pip install -r requirements-cv.txt
-onnxruntime~=1.19.0
-opencv-python~=4.10.0.84
-numpy~=2.1.0
-cryptography~=43.0.0
-httpx[http2]~=0.27.2
+# 版本下限适配 Python 3.13（onnxruntime 1.19 不支持 3.13，最低 1.20）
+onnxruntime>=1.20.0
+opencv-python>=4.10.0
+numpy>=2.1.0
+cryptography>=43.0.0
+httpx[http2]>=0.27.0

@@ -26,10 +26,12 @@ jobs:
 
       - name: Install CV dependencies
         if: env.GEETEST_CV_ENABLE == '1'
+        continue-on-error: true
         run: pip install -r requirements-cv.txt
 
       - name: Download CV models
         if: env.GEETEST_CV_ENABLE == '1'
+        continue-on-error: true
         run: |
           mkdir -p models
           curl -L -o models/yolov8s.onnx https://github.com/alanyz106/MihoyoBBSTools/releases/download/cv-models/yolov8s.onnx
