@@ -9,6 +9,9 @@ on:
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    env:
+      # CV 破解开关：secret GEETEST_CV_ENABLE=1 时启用，否则跳过（省依赖安装和模型下载时间）
+      GEETEST_CV_ENABLE: ${{ secrets.GEETEST_CV_ENABLE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +23,18 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Install CV dependencies
+        if: env.GEETEST_CV_ENABLE == '1'
+        run: pip install -r requirements-cv.txt
+
+      - name: Download CV models
+        if: env.GEETEST_CV_ENABLE == '1'
+        run: |
+          mkdir -p models
+          curl -L -o models/yolov8s.onnx https://github.com/alanyz106/MihoyoBBSTools/releases/download/cv-models/yolov8s.onnx
+          curl -L -o models/siamese.onnx https://github.com/alanyz106/MihoyoBBSTools/releases/download/cv-models/siamese.onnx
+          ls -lh models/
 
       - name: Create config from secret
         run: |
