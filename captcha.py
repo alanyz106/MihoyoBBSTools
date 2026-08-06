@@ -82,9 +82,12 @@ def get_geetest_session_detail(gt: str, challenge: str) -> dict:
     """
     通过极验 get.php 接口查询本次 challenge 会话的详细数据
 
-    fullpage（弹窗智能模式）下 gettype.php 只能看出是"弹窗"，本接口能拿到具体
-    验证形式：返回的 data.s 字段（slide/click/ai/voice/beeline 等）、data.pic
-    （背景图 URL）、data.tip（提示文字，如"请依次点击..."）。
+    ⚠️ 警告：此函数会推进 challenge 会话状态，**绝不能在打码前调用**！
+    2026-08-06 曾在 record_captcha_type（打码前）调用本函数，导致 2captcha
+    拿同一 challenge 打码时被极验拒绝（ERROR_CAPTCHA_UNSOLVABLE），米游社社区
+    签到全部失败。现已从打码流程移除，保留函数仅作参考/调试用。
+    实测 is_next=true 模式下返回的 data.s 是会话 hash 而非类型标识，拿不到
+    slide/click 这种具体形式。具体验证形式只能浏览器抓包确认。
 
     :param gt: 极验 gt 参数
     :param challenge: 本次会话的 challenge
@@ -125,54 +128,35 @@ def record_captcha_type(gt: str, scene: str, challenge: str = "") -> str:
     """
     查询并记录验证码类型，追加到 log/captcha_record.log，同时写入运行日志
 
-    推送消息里只输出一行摘要（呈现模式 + 具体形式），详细 JSON 数据降到 debug
-    级别并写入本地 log/captcha_record.log，避免 wxpusher 推送过长。
+    ⚠️ 不要在此函数（打码前）调用 get.php！get.php 会推进 challenge 会话状态，
+    导致 2captcha 拿同一 challenge 打码时被极验拒绝（ERROR_CAPTCHA_UNSOLVABLE），
+    2026-08-06 的回归 bug 就是这个原因。只能调只读的 gettype.php。
+    具体验证形式（slide/click）需浏览器抓包确认，代码层面拿不到。
 
     :param gt: 极验 gt 参数
     :param scene: 场景标识，如 game/bbs
-    :param challenge: 本次会话的 challenge（可选；传入会额外查询 get.php 拿具体
-        验证形式，fullpage 弹窗模式下能看出是 slide 还是 click）
+    :param challenge: 保留参数（兼容调用方签名），不再用于查询，避免污染会话
     :return: 类型名称（slide/click 等）
     """
     detail = get_geetest_detail(gt)
     captcha_type = detail.get("type", "unknown")
     type_name = CAPTCHA_TYPE_MAP.get(captcha_type, captcha_type)
 
-    # 传入 challenge 时额外查询 get.php，拿本次会话的具体验证形式
-    session_detail = {}
-    s_value = ""
-    s_name = ""
-    if challenge:
-        session_detail = get_geetest_session_detail(gt, challenge)
-        if session_detail:
-            s_value = session_detail.get("s", "")
-            s_name = GEETEST_S_MAP.get(s_value, s_value)
-
-    # 推送摘要：一行展示呈现模式 + 具体形式（fullpage 模式下能区分滑块/点选）
-    summary = f"验证码类型: {scene}场景 → {type_name}({captcha_type})"
-    if s_value:
-        summary += f" → {s_name}({s_value})"
-    log.info(summary)
+    # 推送摘要：一行展示呈现模式（gettype.php 只读，不影响 challenge）
+    log.info(f"验证码类型: {scene}场景 → {type_name}({captcha_type})")
 
     # 详细数据降级到 debug，避免推送消息过长（loghelper 默认 INFO 级别，debug 不进推送）
     script_names = {k: v for k, v in detail.items() if isinstance(v, str) and ("." in v)}
     if script_names:
         log.debug(f"验证码接口脚本: {json.dumps(script_names, ensure_ascii=False)}")
-    if session_detail:
-        log.debug(f"验证码 get.php 会话数据: {json.dumps(session_detail, ensure_ascii=False)}")
 
-    # 完整数据仍写入本地 log/captcha_record.log（*.log 已被 gitignore，不进仓库）
+    # 完整数据写入本地 log/captcha_record.log（*.log 已被 gitignore，不进仓库）
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(CAPTCHA_RECORD_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})")
-            if s_value:
-                f.write(f" 具体形式={s_value} ({s_name})")
-            f.write("\n")
+            f.write(f"{now} 场景={scene} gt={gt} 类型={captcha_type} ({type_name})\n")
             f.write(f"    gettype 数据: {json.dumps(detail, ensure_ascii=False)}\n")
-            if session_detail:
-                f.write(f"    get.php 会话数据: {json.dumps(session_detail, ensure_ascii=False)}\n")
     except Exception as e:
         log.warning(f"写入验证码类型记录失败: {e}")
     return captcha_type
