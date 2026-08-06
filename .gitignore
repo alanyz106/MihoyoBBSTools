@@ -156,3 +156,6 @@ result/
 # AI 协作本地目录（项目主题记忆、工作区缓存），不进仓库
 memory/
 .workbuddy/
+
+# CV 破解模型文件（60MB，从 Release 下载，不进仓库）
+models/
