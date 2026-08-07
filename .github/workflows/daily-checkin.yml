@@ -41,6 +41,7 @@ jobs:
           # 九宫格图片验证码模型（Yiffyi，AGPL-3.0）
           python3 - <<'PY'
           import os
+          os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
           os.makedirs('models/geetest_ninepic/hints', exist_ok=True)
           from huggingface_hub import hf_hub_download
           hf_hub_download('Yiffyi/resnet-geetest-v3-nine-pic', 'model.onnx',
