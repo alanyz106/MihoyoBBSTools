@@ -29,8 +29,18 @@ jobs:
         continue-on-error: true
         run: pip install -r requirements-cv.txt
 
-      - name: Download CV models
+      - name: Cache CV models
         if: env.GEETEST_CV_ENABLE == '1'
+        id: cache-cv-models
+        uses: actions/cache@v4
+        with:
+          path: models/
+          key: cv-models-${{ runner.os }}-${{ hashFiles('.github/cv-models-version.txt') }}
+          restore-keys: |
+            cv-models-${{ runner.os }}-
+
+      - name: Download CV models
+        if: env.GEETEST_CV_ENABLE == '1' && steps.cache-cv-models.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
           mkdir -p models
