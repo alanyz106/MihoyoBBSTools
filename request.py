@@ -17,7 +17,12 @@ def get_new_session(**kwargs):
         import requests
         from requests.adapters import HTTPAdapter
 
-        http_client = requests.Session()
+        class _TimeoutSession(requests.Session):
+            def request(self, method, url, **kwargs):
+                kwargs.setdefault('timeout', 30)
+                return super().request(method, url, **kwargs)
+
+        http_client = _TimeoutSession()
         http_client.mount('http://', HTTPAdapter(max_retries=10))
         http_client.mount('https://', HTTPAdapter(max_retries=10))
     return http_client
