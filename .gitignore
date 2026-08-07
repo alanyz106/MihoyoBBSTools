@@ -149,6 +149,7 @@ yaml/
 
 # 日志文件
 *.log
+log/cv_debug/
 
 # Nix 编译输出
 result/

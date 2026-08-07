@@ -58,6 +58,15 @@ jobs:
           cat output.log >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Upload CV debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cv-debug-${{ github.run_id }}
+          path: log/cv_debug/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Push result via wxpusher
         if: always()
         env:

@@ -5,6 +5,7 @@
 用 YOLOv8 检测文字位置 + 孪生网络匹配点击顺序。
 """
 import os
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -15,6 +16,15 @@ from loghelper import log
 # 模型文件目录：优先环境变量，否则用项目根目录下的 models/
 _DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "models")
 _MODEL_DIR = os.getenv("GEETEST_CV_MODEL_DIR", _DEFAULT_MODEL_DIR)
+
+_SAVE_DEBUG = os.getenv("GEETEST_CV_DEBUG", "").strip().lower() in ("1", "true", "yes")
+_DEBUG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "log", "cv_debug")
+
+
+def _debug_path(prefix: str, retry: int, ext: str = "png") -> str:
+    os.makedirs(_DEBUG_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%m%d_%H%M%S_%f")[:-3]
+    return os.path.join(_DEBUG_DIR, f"{prefix}_{ts}_r{retry}.{ext}")
 
 
 class Model:
@@ -31,7 +41,7 @@ class Model:
         self.classes = ["big", "small"]
         log.debug("CV 模型加载完成")
 
-    def detect(self, img: bytes):
+    def detect(self, img: bytes, retry: int = 0):
         confidence_thres = 0.8
         iou_thres = 0.8
         model_inputs = self.yolo.get_inputs()
@@ -74,6 +84,18 @@ class Model:
                 small_imgs[i[0]] = cropped
             else:
                 big_img_boxes.append(i)
+
+        # 保存调试图：在原图上画出所有检测框，绿色=big，红色=small
+        if _SAVE_DEBUG:
+            debug_img = self.img.copy()
+            for box in big_img_boxes:
+                cv2.rectangle(debug_img, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]), (0, 255, 0), 2)
+            for x, sm in small_imgs.items():
+                # small_imgs 只保留了裁剪图，没有原始 box，这里用 key(x) 和裁剪高度反推
+                h, w = sm.shape[:2]
+                cv2.rectangle(debug_img, (x, 0), (x + w, h), (0, 0, 255), 2)
+            cv2.imwrite(_debug_path("detect", retry, "jpg"), debug_img)
+
         return small_imgs, big_img_boxes
 
     @staticmethod
@@ -84,11 +106,14 @@ class Model:
         img_expanded = np.expand_dims(img_transposed, axis=0).astype(np.float32)
         return img_expanded
 
-    def siamese(self, small_imgs, big_img_boxes):
+    def siamese(self, small_imgs, big_img_boxes, retry: int = 0):
         preprocessed_small_imgs = {i: self.preprocess_image(small_imgs[i]) for i in sorted(small_imgs)}
         result_list = []
+        result_scores = []
         for i in sorted(preprocessed_small_imgs):
             image_data_1 = preprocessed_small_imgs[i]
+            best_box = None
+            best_score = -1
             for box in big_img_boxes:
                 if [box[0], box[1]] in result_list:
                     continue
@@ -98,7 +123,14 @@ class Model:
                 output = self.Siamese.run(None, inputs)
                 output_sigmoid = 1 / (1 + np.exp(-output[0]))
                 res = output_sigmoid[0][0]
+                if res > best_score:
+                    best_score = res
+                    best_box = [box[0], box[1]]
                 if res >= 0.1:
                     result_list.append([box[0], box[1]])
+                    result_scores.append(round(float(res), 4))
                     break
-        return result_list
+            # 如果当前 small 没有触发 0.1 阈值，记录最佳匹配分数用于调试
+            if best_box and best_box not in result_list:
+                log.debug(f"CV small@{i} 最佳匹配分数: {best_score:.4f}，未达阈值")
+        return result_list, result_scores

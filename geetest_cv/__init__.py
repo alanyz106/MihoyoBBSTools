@@ -14,10 +14,28 @@
 import json
 import os
 import time
+from datetime import datetime
 
 from loghelper import log
 
 _model_instance = None
+
+_DEBUG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "log", "cv_debug")
+_SAVE_DEBUG = os.getenv("GEETEST_CV_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+def _debug_path(prefix: str, retry: int, ext: str = "png") -> str:
+    os.makedirs(_DEBUG_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%m%d_%H%M%S_%f")[:-3]
+    return os.path.join(_DEBUG_DIR, f"{prefix}_{ts}_r{retry}.{ext}")
+
+
+def _save_bytes(path: str, data: bytes):
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+    except Exception as e:
+        log.debug(f"保存调试图片失败: {path}, {e}")
 
 
 def _get_model():
@@ -74,16 +92,20 @@ def solve(gt: str, challenge: str, max_retries: int = 3):
         for retry in range(max_retries):
             ttt = time.time()
             pic_content = crack.get_pic(retry)
-            small_img, big_img = model.detect(pic_content)
+            if _SAVE_DEBUG and pic_content:
+                _save_bytes(_debug_path("raw", retry, "jpg"), pic_content)
+
+            small_img, big_img = model.detect(pic_content, retry)
             log.debug(f"CV 检测: 小图{len(small_img)}个 大图{len(big_img)}个 (第{retry+1}次)")
 
             if not small_img or not big_img:
-                log.debug(f"CV 检测结果为空，刷新重试 (第{retry+1}次)")
+                log.warning(f"CV 检测结果为空，刷新重试 (第{retry+1}次)")
                 continue
 
-            result_list = model.siamese(small_img, big_img)
+            result_list, scores = model.siamese(small_img, big_img, retry)
+            log.debug(f"CV 匹配结果: {result_list}, 分数: {scores} (第{retry+1}次)")
             if not result_list:
-                log.debug(f"CV 匹配失败，刷新重试 (第{retry+1}次)")
+                log.warning(f"CV 匹配失败，刷新重试 (第{retry+1}次)")
                 continue
 
             point_list = []
@@ -105,7 +127,7 @@ def solve(gt: str, challenge: str, max_retries: int = 3):
                     "challenge": challenge,
                     "validate": validate,
                 }
-            log.debug(f"CV verify 未通过 (第{retry+1}次): {result.get('data', {})}")
+            log.warning(f"CV verify 未通过 (第{retry+1}次): {result.get('data', {})}")
 
         log.warning(f"CV 破解失败（{max_retries}次重试均未成功），将回退打码服务")
         return None
