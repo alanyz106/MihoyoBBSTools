@@ -32,10 +32,27 @@ jobs:
       - name: Download CV models
         if: env.GEETEST_CV_ENABLE == '1'
         continue-on-error: true
+        env:
+          HF_ENDPOINT: https://hf-mirror.com
         run: |
           mkdir -p models
           curl -L -o models/yolov8s.onnx https://github.com/alanyz106/MihoyoBBSTools/releases/download/cv-models/yolov8s.onnx
           curl -L -o models/siamese.onnx https://github.com/alanyz106/MihoyoBBSTools/releases/download/cv-models/siamese.onnx
+          # 九宫格图片验证码模型（Yiffyi，AGPL-3.0）
+          python3 - <<'PY'
+          import os
+          os.makedirs('models/geetest_ninepic/hints', exist_ok=True)
+          from huggingface_hub import hf_hub_download
+          hf_hub_download('Yiffyi/resnet-geetest-v3-nine-pic', 'model.onnx',
+                          local_dir='models/geetest_ninepic', repo_type='model')
+          for i in range(90):
+              hf_hub_download('Yiffyi/dataset-geetest-v3-nine-pic',
+                              f'hints/hint_{i}.jpg',
+                              local_dir='models/geetest_ninepic',
+                              repo_type='dataset')
+          print('ninepic model:', os.path.getsize('models/geetest_ninepic/model.onnx'))
+          print('hints:', len(os.listdir('models/geetest_ninepic/hints')))
+          PY
           ls -lh models/
 
       - name: Create config from secret

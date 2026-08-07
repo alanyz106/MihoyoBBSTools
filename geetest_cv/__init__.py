@@ -18,6 +18,13 @@ from datetime import datetime
 
 from loghelper import log
 
+# 九宫格图片验证码识别（可选）
+try:
+    import geetest_ninepic
+    _GEETEST_NINEPIC_IMPORTABLE = True
+except ImportError:
+    _GEETEST_NINEPIC_IMPORTABLE = False
+
 _model_instance = None
 
 _DEBUG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "log", "cv_debug")
@@ -92,6 +99,7 @@ def solve(gt: str, challenge: str, max_retries: int = 3):
         for retry in range(max_retries):
             ttt = time.time()
             pic_content = crack.get_pic(retry)
+            pic_got_time = time.time()
             if _SAVE_DEBUG and pic_content:
                 _save_bytes(_debug_path("raw", retry, "jpg"), pic_content)
 
@@ -99,7 +107,32 @@ def solve(gt: str, challenge: str, max_retries: int = 3):
             log.debug(f"CV 检测: 小图{len(small_img)}个 大图{len(big_img)}个 (第{retry+1}次)")
 
             if not small_img or not big_img:
-                log.warning(f"CV 检测结果为空，刷新重试 (第{retry+1}次)")
+                log.warning(f"CV 文字点选检测结果为空，可能是九宫格图片验证码 (第{retry+1}次)")
+                if _GEETEST_NINEPIC_IMPORTABLE and geetest_ninepic.is_available():
+                    try:
+                        points = geetest_ninepic.predict_points(pic_content)
+                        if points:
+                            submission = [f"{col}_{row}" for col, row, _ in points]
+                            log.info(f"九宫格模型提交: {submission}")
+                            # 极验要求验证与获取图片间隔不小于 2 秒，九宫格有时更严格
+                            wait_time = 2.3 - (time.time() - pic_got_time)
+                            if wait_time > 0:
+                                time.sleep(wait_time)
+                            result = json.loads(crack.verify(submission))
+                            if result.get("data", {}).get("result") == "success":
+                                validate = result["data"].get("validate", "")
+                                log.info("九宫格 CV 破解成功，未消耗打码额度")
+                                return {
+                                    "challenge": challenge,
+                                    "validate": validate,
+                                }
+                            log.warning(f"九宫格 CV verify 未通过 (第{retry+1}次): {result.get('data', {})}")
+                        else:
+                            log.warning(f"九宫格模型未识别到匹配项 (第{retry+1}次)")
+                    except Exception as e:
+                        log.warning(f"九宫格 CV 识别异常 (第{retry+1}次): {e}")
+                else:
+                    log.debug("九宫格模型不可用，跳过")
                 continue
 
             result_list, scores = model.siamese(small_img, big_img, retry)

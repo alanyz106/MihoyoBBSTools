@@ -160,3 +160,6 @@ memory/
 
 # CV 破解模型文件（60MB，从 Release 下载，不进仓库）
 models/
+
+# 九宫格验证码调研用的第三方 AGPL 项目克隆（仅本地参考，不进仓库）
+geetest-v3-nine-pic-crack/
