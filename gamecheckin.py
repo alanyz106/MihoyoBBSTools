@@ -3,7 +3,6 @@ import login
 import tools
 import config
 import random
-import captcha
 import setting
 from error import *
 from request import get_new_session
@@ -108,19 +107,11 @@ class GameCheckin:
                 continue
             data = result.json()
             if data["retcode"] == 0 and data["data"]["success"] == 1 and i < retries:
-                captcha_result = captcha.game_captcha(data["data"]["gt"], data["data"]["challenge"])
-                if captcha_result is not None:
-                    challenge = data["data"]["challenge"]
-                    if type(captcha_result) == dict:
-                        validate = captcha_result["validate"]
-                        challenge = captcha_result["challenge"]
-                    else:
-                        validate = captcha_result
-                    header.update({
-                        "x-rpc-challenge": challenge,
-                        "x-rpc-validate": validate,
-                        "x-rpc-seccode": f'{validate}|jordan'
-                    })
+                # 游戏签到（原神/星穹铁道等）实际从不触发极验验证码——历史 GitHub Actions 运行
+                # 记录（2026-08-02 起）显示所有验证码均来自社区签到（bbs 场景）。验证码的 CV 破解
+                # 与 2captcha 兜底仅服务于社区签到（bbs_captcha），游戏侧无需处理。若日后游戏侧真
+                # 触发验证码，此处仅记录告警并继续重试，避免静默失败。
+                log.warning("游戏签到返回验证码挑战(success==1)，但本项目不处理游戏侧验证码，跳过并继续")
                 time.sleep(random.randint(6, 15))
             else:
                 break

@@ -14,9 +14,10 @@ try:
 except ImportError:
     _GEETEST_CV_IMPORTABLE = False
 
-# CV 破解失败计数（本次运行内累计），超过阈值后切打码服务避免无限重试
+# CV 破解失败计数（本次运行内累计，仅社区签到 bbs 场景使用），超过阈值后切打码服务避免无限重试
+# 阈值 = CV 最多尝试次数；当前 4 → CV 至多试 4 次，第 5 次验证码触发才走 2captcha/capsolver
 _cv_fail_count = 0
-_CV_MAX_FAIL = 2
+_CV_MAX_FAIL = 4
 
 CAPSOLVER_API_URL = "https://api.capsolver.com"
 TWOCAPTCHA_API_URL = "https://api.2captcha.com"
@@ -324,27 +325,6 @@ def _solve_via_2captcha(gt: str, challenge: str, page_url: str):
         return None
     finally:
         client.close()
-
-
-def game_captcha(gt: str, challenge: str) -> dict:
-    """解决游戏签到的 GeeTest 验证码（CV 优先，打码服务兜底）"""
-    global _cv_fail_count
-    # CV 破解优先（独立流程，会推进 challenge，不走 record_captcha_type）
-    if _cv_enabled() and _cv_fail_count < _CV_MAX_FAIL:
-        result = geetest_cv.solve(gt, challenge)
-        if result:
-            return result
-        _cv_fail_count += 1
-        log.warning(f"CV 破解失败（第{_cv_fail_count}次），等待重新触发验证码")
-        return None  # challenge 已污染，外层重新触发拿新 challenge
-    # 打码服务兜底（新 challenge，走 record_captcha_type 记录类型）
-    record_captcha_type(gt, "game", challenge)
-    provider = _get_provider()
-    if provider == "capsolver":
-        return _solve_via_capsolver(gt, challenge, "https://act.mihoyo.com/")
-    elif provider == "2captcha":
-        return _solve_via_2captcha(gt, challenge, "https://act.mihoyo.com/")
-    return None
 
 
 def bbs_captcha(gt: str, challenge: str) -> dict:
