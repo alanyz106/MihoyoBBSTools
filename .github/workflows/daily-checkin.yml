@@ -10,8 +10,12 @@ jobs:
   checkin:
     runs-on: ubuntu-latest
     env:
-      # CV 破解开关：secret GEETEST_CV_ENABLE=1 时启用，否则跳过（省依赖安装和模型下载时间）
+      # 本地 CV 破解开关：secret GEETEST_CV_ENABLE=1 时启用（需在 runner 上下载模型）
       GEETEST_CV_ENABLE: ${{ secrets.GEETEST_CV_ENABLE }}
+      # 自建验证码推理服务器（形如 https://xxx/captcha）。设置后验证码改由远程 API
+      # 破解，runner 上不再安装 CV 依赖、不下载模型；GEETEST_API_KEY 为 X-API-Key 请求头
+      GEETEST_API_URL: ${{ secrets.GEETEST_API_URL }}
+      GEETEST_API_KEY: ${{ secrets.GEETEST_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,12 +29,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install CV dependencies
-        if: env.GEETEST_CV_ENABLE == '1'
+        if: env.GEETEST_CV_ENABLE == '1' && env.GEETEST_API_URL == ''
         continue-on-error: true
         run: pip install -r requirements-cv.txt
 
       - name: Cache CV models
-        if: env.GEETEST_CV_ENABLE == '1'
+        if: env.GEETEST_CV_ENABLE == '1' && env.GEETEST_API_URL == ''
         id: cache-cv-models
         uses: actions/cache@v4
         with:
@@ -40,7 +44,7 @@ jobs:
             cv-models-${{ runner.os }}-
 
       - name: Download CV models
-        if: env.GEETEST_CV_ENABLE == '1' && steps.cache-cv-models.outputs.cache-hit != 'true'
+        if: env.GEETEST_CV_ENABLE == '1' && env.GEETEST_API_URL == '' && steps.cache-cv-models.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
           mkdir -p models

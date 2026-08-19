@@ -327,11 +327,74 @@ def _solve_via_2captcha(gt: str, challenge: str, page_url: str):
         client.close()
 
 
+def _remote_api_url() -> str:
+    """自建验证码推理服务器地址（GEETEST_API_URL），形如 https://xxx/captcha，设置后优先于本地 CV"""
+    return os.getenv("GEETEST_API_URL", "").strip().rstrip("/")
+
+
+def _remote_api_key() -> str:
+    """自建验证码推理服务器 API Key（GEETEST_API_KEY），作为 X-API-Key 请求头"""
+    return os.getenv("GEETEST_API_KEY", "").strip()
+
+
+def _solve_via_remote_api(gt: str, challenge: str):
+    """
+    通过自建推理服务器解决极验验证码（geetest-v3-nine-pic-crack 部署的服务端）
+
+    服务器端自行完成 gettype → get_c_s → ajax → get_pic → 模型识别 → verify 全流程，
+    本机无需安装 CV 依赖、无需下载模型。成功返回极验完整响应 JSON。
+
+    ⚠️ 与本地 CV 一样会推进 challenge 会话状态，失败后该 challenge 不能再给
+    2captcha 用，必须返回 None 让外层重新触发拿新 challenge。
+
+    :param gt: 极验 gt 参数
+    :param challenge: 本次会话的 challenge
+    :return: {"challenge": str, "validate": str} 或 None
+    """
+    base = _remote_api_url()
+    headers = {}
+    api_key = _remote_api_key()
+    if api_key:
+        headers["X-API-Key"] = api_key
+    client = httpx.Client(timeout=120, headers=headers)
+    try:
+        log.info("正在调用自建验证码 API...")
+        resp = client.get(f"{base}/crack_it", params={"gt": gt, "challenge": challenge})
+        if resp.status_code != 200:
+            log.warning(f"自建验证码 API 返回异常: HTTP {resp.status_code}, {resp.text[:200]}")
+            return None
+        data = resp.json()
+        result_data = data.get("data", {})
+        if result_data.get("result") == "success":
+            validate = result_data.get("validate", "")
+            log.info("自建验证码 API 破解成功，未消耗打码额度")
+            return {"challenge": challenge, "validate": validate}
+        log.warning(f"自建验证码 API 破解失败: {result_data}")
+        return None
+    except Exception as e:
+        log.warning(f"自建验证码 API 请求异常: {e}")
+        return None
+    finally:
+        client.close()
+
+
 def bbs_captcha(gt: str, challenge: str) -> dict:
-    """解决米游社社区操作的 GeeTest 验证码（CV 优先，打码服务兜底）"""
+    """解决米游社社区操作的 GeeTest 验证码（自建API/本地CV 优先，打码服务兜底）"""
     global _cv_fail_count
-    # CV 破解优先（独立流程，会推进 challenge，不走 record_captcha_type）
-    if _cv_enabled() and _cv_fail_count < _CV_MAX_FAIL:
+    # 自建推理服务器优先：模型跑在服务器上，本机无需模型和 CV 依赖
+    # （同样走独立极验流程，失败会污染 challenge，返回 None 让外层重新触发）
+    if _remote_api_url():
+        if _cv_fail_count >= _CV_MAX_FAIL:
+            log.warning("自建验证码 API 连续失败，改用打码服务")
+        else:
+            result = _solve_via_remote_api(gt, challenge)
+            if result:
+                return result
+            _cv_fail_count += 1
+            log.warning(f"自建验证码 API 破解失败（第{_cv_fail_count}次），等待重新触发验证码")
+            return None
+    # 本地 CV 破解优先（独立流程，会推进 challenge，不走 record_captcha_type）
+    elif _cv_enabled() and _cv_fail_count < _CV_MAX_FAIL:
         result = geetest_cv.solve(gt, challenge)
         if result:
             return result
