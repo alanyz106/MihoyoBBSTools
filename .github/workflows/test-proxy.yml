@@ -1,9 +1,10 @@
 name: Test Free Proxy Connectivity
 
 # 手动触发的测试工作流：在 GitHub Actions runner（海外）上拉取站大爷免费代理，
-# 逐个测活是否能连通米游社关键域名，并区分两类故障：
-#   1) GitHub runner 连不上代理（proxy_error / connect_error / connect_timeout）
-#   2) 代理连得上但连不上米游社（google 对照站通、米游社域名超时/5xx）
+# 两段式分层测活，精准定位断点在哪一段：
+#   第一段：裸 TCP 连接代理端口（不经代理转发），通=「runner -> 代理」链路 OK
+#   第二段：TCP 通后经代理访问米游社域名，通=「代理 -> 米游社」链路 OK
+#   两段都通 = ALL_OK；第一段断 = runner 连不上代理；第二段断 = 代理连不上米游社
 #
 # 前置：需在仓库 Settings -> Secrets 添加 ZDAYE_APP_ID / ZDAYE_AKEY。
 
@@ -33,6 +34,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import socket
           import time
           from collections import Counter
           from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -56,67 +58,79 @@ jobs:
               "https://bbs-api.miyoushe.com/apihub/wapi/getUserMissionsState",
               "https://api-takumi.mihoyo.com/event/luna/info?lang=zh-cn&act_id=e202311201442471",
           ]
-          # 海外通用可达站，用于区分:能通它=「GitHub→代理」链路OK
-          CONTROL_URL = "https://www.google.com/generate_204"
 
           def scheme_of(proto):
               if proto in ("socks5", "socks4"):
                   return proto
               return "http"
 
-          def classify(proxy, url, timeout=8):
-              t0 = time.time()
+          # 第一段：裸 TCP 连接代理端口（不经过任何代理转发），纯粹测「runner -> 代理」
+          def tcp_connect(ip, port, timeout=6):
+              try:
+                  with socket.create_connection((ip, port), timeout=timeout):
+                      return "tcp_ok"
+              except socket.timeout:
+                  return "tcp_timeout"
+              except ConnectionRefusedError:
+                  return "tcp_refused"
+              except OSError:
+                  return "tcp_error"
+
+          # 第二段：经代理发请求，测「代理 -> 目标站」
+          def via_proxy(proxy, url, timeout=8):
               try:
                   with httpx.Client(proxy=proxy, timeout=timeout, follow_redirects=True) as c:
                       r = c.get(url)
-                      dt = time.time() - t0
                       if r.status_code < 500:
-                          return ("ok", dt)
-                      return ("http_err", r.status_code, dt)
+                          return "ok"
+                      return f"http_{r.status_code}"
               except httpx.ProxyError:
-                  return ("proxy_error", None, time.time() - t0)
+                  return "proxy_error"
               except httpx.ConnectTimeout:
-                  return ("connect_timeout", None, time.time() - t0)
+                  return "connect_timeout"
               except httpx.ReadTimeout:
-                  return ("read_timeout", None, time.time() - t0)
+                  return "read_timeout"
               except httpx.ConnectError:
-                  return ("connect_error", None, time.time() - t0)
+                  return "connect_error"
               except Exception as e:
-                  return ("other", type(e).__name__, time.time() - t0)
+                  return f"other:{type(e).__name__}"
 
-          def probe_mihoyo(p):
-              ip, port = str(p["ip"]), str(p["port"])
+          # 直连基准：不经代理直连米游社（测 runner 到米游社本身）
+          def direct(url, timeout=12):
+              try:
+                  with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+                      r = c.get(url)
+                      return f"ok({r.status_code})" if r.status_code < 500 else f"http_{r.status_code}"
+              except Exception as e:
+                  return f"fail:{type(e).__name__}"
+
+          def probe(p):
+              ip, port = str(p["ip"]), int(p["port"])
               proxy = f'{scheme_of(p.get("protocol", "http"))}://{ip}:{port}'
-              ctrl = classify(proxy, CONTROL_URL)
-              if ctrl[0] != "ok":
-                  return (proxy, p.get("protocol"), "no_bridge", ctrl[0])
-              ok = 0
-              total = 0.0
-              worst = None
-              for u in MIHOYO_URLS:
-                  st, *rest = classify(proxy, u)
-                  if st == "ok":
-                      ok += 1
-                      total += rest[0]
-                  else:
-                      worst = st
-              if ok == len(MIHOYO_URLS):
-                  return (proxy, p.get("protocol"), "ALL_OK", total / ok)
-              return (proxy, p.get("protocol"), "bridge_but_mihoyo_fail", worst)
+              tcp = tcp_connect(ip, port)
+              if tcp != "tcp_ok":
+                  # 第一段就断了：runner 连不上代理
+                  return {"proxy": proxy, "protocol": p.get("protocol"), "stage": "stage1_runner_to_proxy_dead", "detail": tcp}
+              # 第二段：代理转发到米游社
+              res = [via_proxy(proxy, u) for u in MIHOYO_URLS]
+              if all(x == "ok" for x in res):
+                  return {"proxy": proxy, "protocol": p.get("protocol"), "stage": "ALL_OK", "detail": ""}
+              return {"proxy": proxy, "protocol": p.get("protocol"), "stage": "stage2_proxy_to_mihoyo_dead", "detail": "/".join(res)}
 
-          # 直连基准
-          print("=== 直连基准 ===")
-          for u in [CONTROL_URL] + MIHOYO_URLS:
-              print(u, classify(None, u))
+          print("=== 直连基准（不经代理，测 runner 到米游社本身）===")
+          for u in MIHOYO_URLS:
+              print(u, "->", direct(u))
           print()
 
-          # 专项：用户给的关键 IP
+          # 专项：用户给的关键 IP（两层分开测）
           print("=== 专项 47.95.206.224 ===")
           for port in range(45001, 45011):
-              proxy = f"http://47.95.206.224:{port}"
-              ctrl = classify(proxy, CONTROL_URL)
-              m1 = classify(proxy, MIHOYO_URLS[0]) if ctrl[0] == "ok" else ("skip",)
-              print(f"{proxy} ctrl={ctrl[0]} mihoyo={m1[0] if len(m1) > 1 else m1 or 'skip'}")
+              tcp = tcp_connect("47.95.206.224", port)
+              if tcp == "tcp_ok":
+                  m = via_proxy(f"http://47.95.206.224:{port}", MIHOYO_URLS[0])
+                  print(f":{port} tcp=OK via_proxy={m}")
+              else:
+                  print(f":{port} tcp={tcp}")
           print()
 
           r = httpx.get(API_URL, params=API_PARAMS, timeout=20)
@@ -125,39 +139,55 @@ jobs:
           proxies = data.get("data", {}).get("proxy_list", [])
           print(f"[拉取] 共 {len(proxies)} 个代理")
 
-          results = []
-          stats = Counter()
+          stage_stats = Counter()
+          stage1_detail = Counter()
+          stage2_detail = Counter()
+          usable = []
           with ThreadPoolExecutor(max_workers=30) as ex:
-              futs = [ex.submit(probe_mihoyo, p) for p in proxies]
+              futs = [ex.submit(probe, p) for p in proxies]
               for f in as_completed(futs):
                   rres = f.result()
-                  stats[rres[2]] += 1
-                  if rres[2] == "ALL_OK":
-                      results.append(rres)
+                  stage_stats[rres["stage"]] += 1
+                  if rres["stage"] == "stage1_runner_to_proxy_dead":
+                      stage1_detail[rres["detail"]] += 1
+                  elif rres["stage"] == "stage2_proxy_to_mihoyo_dead":
+                      stage2_detail[rres["detail"]] += 1
+                  elif rres["stage"] == "ALL_OK":
+                      usable.append(rres)
 
-          results.sort(key=lambda x: x[3])
-          print(f"\n=== 分类统计 ===")
-          for k, v in stats.items():
+          print("\n=== 两段式分层统计 ===")
+          for k, v in stage_stats.most_common():
               print(f"{k}: {v}")
-          print(f"\n=== 可用代理 {len(results)} 个 ===")
-          for proxy, proto, tag, avg in results[:30]:
-              print(f"{proxy} [{proto}] avg={avg:.2f}s")
+          print("\n=== 第一段死因明细（runner->代理 断）===")
+          for k, v in stage1_detail.most_common():
+              print(f"{k}: {v}")
+          print("\n=== 第二段死因明细（代理->米游社 断）===")
+          for k, v in stage2_detail.most_common():
+              print(f"{k}: {v}")
+          print(f"\n=== 可用代理 {len(usable)} 个 ===")
+          for r in usable[:30]:
+              print(f"{r['proxy']} [{r['protocol']}]")
 
-          usable = [{"proxy": r[0], "protocol": r[1], "avg_seconds": round(r[3], 3)} for r in results]
           json.dump(
-              {"fetched": len(proxies), "stats": dict(stats), "usable": usable},
+              {
+                  "fetched": len(proxies),
+                  "stage_stats": dict(stage_stats),
+                  "stage1_detail": dict(stage1_detail),
+                  "stage2_detail": dict(stage2_detail),
+                  "usable": [u["proxy"] for u in usable],
+              },
               open("proxy_test_result.json", "w", encoding="utf-8"),
               ensure_ascii=False, indent=2,
           )
 
-          lines = ["站大爷免费代理 Actions 测活（修正域名版本）"]
+          lines = ["站大爷免费代理 Actions 两段式分层测活"]
           lines.append(f"拉取代理数: {len(proxies)}")
-          for k, v in stats.items():
+          for k, v in stage_stats.most_common():
               lines.append(f"{k}: {v}")
-          if results:
-              lines.append(f"可用: {len(results)} 个")
-              for r in results[:10]:
-                  lines.append(f"{r[0]} [{r[1]}] avg={r[3]:.2f}s")
+          if usable:
+              lines.append(f"可用: {len(usable)} 个")
+              for r in usable[:10]:
+                  lines.append(f"{r['proxy']} [{r['protocol']}]")
           else:
               lines.append("无可用代理")
           with open("result.txt", "w", encoding="utf-8") as f:
