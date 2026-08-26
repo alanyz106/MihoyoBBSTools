@@ -1,8 +1,9 @@
 name: Test Free Proxy Connectivity
 
 # 手动触发的测试工作流：在 GitHub Actions runner（海外）上拉取站大爷免费代理，
-# 逐个测活是否能连通米游社关键域名，用于验证免费代理方案在 Actions 环境是否可行。
-# 本地测通不算数，必须以本工作流在 runner 上的结果为准。
+# 逐个测活是否能连通米游社关键域名，并区分两类故障：
+#   1) GitHub runner 连不上代理（proxy_error / connect_error / connect_timeout）
+#   2) 代理连得上但连不上米游社（google 对照站通、米游社域名超时/5xx）
 #
 # 前置：需在仓库 Settings -> Secrets 添加 ZDAYE_APP_ID / ZDAYE_AKEY。
 
@@ -22,7 +23,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install httpx
-        run: pip install httpx
+        run: pip install httpx socksio
 
       - name: Fetch & probe proxies
         env:
@@ -33,6 +34,7 @@ jobs:
           import json
           import os
           import time
+          from collections import Counter
           from concurrent.futures import ThreadPoolExecutor, as_completed
 
           import httpx
@@ -40,46 +42,82 @@ jobs:
           APP_ID = os.environ.get("ZDAYE_APP_ID", "")
           AKEY = os.environ.get("ZDAYE_AKEY", "")
           if not APP_ID or not AKEY:
-              print("ERROR: 缺少 secrets ZDAYE_APP_ID / ZDAYE_AKEY，请在仓库 Settings -> Secrets 添加后重试")
+              print("ERROR: 缺少 secrets ZDAYE_APP_ID / ZDAYE_AKEY")
               raise SystemExit(1)
 
           API_URL = "http://www.zdopen.com/FreeProxy/Get/"
           API_PARAMS = {
-              "app_id": APP_ID,
-              "akey": AKEY,
-              "count": 100,
-              "dalu": 1,
-              "level_type": 1,
-              "lastcheck_type": 4,
-              "sleep_type": 3,
-              "return_type": 3,
+              "app_id": APP_ID, "akey": AKEY, "count": 100, "dalu": 1,
+              "level_type": 1, "lastcheck_type": 4, "sleep_type": 3, "return_type": 3,
           }
 
-          TEST_URLS = [
-              "https://bbs.mihoyo.com/bbs_api/getUserBoardSignInfo",
-              "https://api-takumi.mihoyo.com/",
-              "https://api-takumi-record.mihoyo.com/",
+          # 正确域名：社区签到走 bbs-api.miyoushe.com（不是 bbs.mihoyo.com）
+          MIHOYO_URLS = [
+              "https://bbs-api.miyoushe.com/apihub/wapi/getUserMissionsState",
+              "https://api-takumi.mihoyo.com/event/luna/info?lang=zh-cn&act_id=e202311201442471",
           ]
+          # 海外通用可达站，用于区分:能通它=「GitHub→代理」链路OK
+          CONTROL_URL = "https://www.google.com/generate_204"
 
-          def probe(urls, proxy=None):
-              with httpx.Client(proxy=proxy, timeout=6, follow_redirects=True) as c:
-                  total = 0.0
-                  for u in urls:
-                      t0 = time.time()
-                      r = c.get(u)
+          def scheme_of(proto):
+              if proto in ("socks5", "socks4"):
+                  return proto
+              return "http"
+
+          def classify(proxy, url, timeout=8):
+              t0 = time.time()
+              try:
+                  with httpx.Client(proxy=proxy, timeout=timeout, follow_redirects=True) as c:
+                      r = c.get(url)
                       dt = time.time() - t0
-                      if r.status_code >= 500:
-                          return None
-                      total += dt
-              return total / len(urls)
+                      if r.status_code < 500:
+                          return ("ok", dt)
+                      return ("http_err", r.status_code, dt)
+              except httpx.ProxyError:
+                  return ("proxy_error", None, time.time() - t0)
+              except httpx.ConnectTimeout:
+                  return ("connect_timeout", None, time.time() - t0)
+              except httpx.ReadTimeout:
+                  return ("read_timeout", None, time.time() - t0)
+              except httpx.ConnectError:
+                  return ("connect_error", None, time.time() - t0)
+              except Exception as e:
+                  return ("other", type(e).__name__, time.time() - t0)
 
-          # 直连基准：agent 海外直连国内 API 的现状
-          direct_avg = None
-          try:
-              direct_avg = probe(TEST_URLS)
-              print(f"[直连基准] avg={direct_avg:.2f}s" if direct_avg else "[直连基准] 失败")
-          except Exception as e:
-              print(f"[直连基准] 异常: {e}")
+          def probe_mihoyo(p):
+              ip, port = str(p["ip"]), str(p["port"])
+              proxy = f'{scheme_of(p.get("protocol", "http"))}://{ip}:{port}'
+              ctrl = classify(proxy, CONTROL_URL)
+              if ctrl[0] != "ok":
+                  return (proxy, p.get("protocol"), "no_bridge", ctrl[0])
+              ok = 0
+              total = 0.0
+              worst = None
+              for u in MIHOYO_URLS:
+                  st, *rest = classify(proxy, u)
+                  if st == "ok":
+                      ok += 1
+                      total += rest[0]
+                  else:
+                      worst = st
+              if ok == len(MIHOYO_URLS):
+                  return (proxy, p.get("protocol"), "ALL_OK", total / ok)
+              return (proxy, p.get("protocol"), "bridge_but_mihoyo_fail", worst)
+
+          # 直连基准
+          print("=== 直连基准 ===")
+          for u in [CONTROL_URL] + MIHOYO_URLS:
+              print(u, classify(None, u))
+          print()
+
+          # 专项：用户给的关键 IP
+          print("=== 专项 47.95.206.224 ===")
+          for port in range(45001, 45011):
+              proxy = f"http://47.95.206.224:{port}"
+              ctrl = classify(proxy, CONTROL_URL)
+              m1 = classify(proxy, MIHOYO_URLS[0]) if ctrl[0] == "ok" else ("skip",)
+              print(f"{proxy} ctrl={ctrl[0]} mihoyo={m1[0] if len(m1) > 1 else m1 or 'skip'}")
+          print()
 
           r = httpx.get(API_URL, params=API_PARAMS, timeout=20)
           data = r.json()
@@ -87,54 +125,41 @@ jobs:
           proxies = data.get("data", {}).get("proxy_list", [])
           print(f"[拉取] 共 {len(proxies)} 个代理")
 
-          def worker(p):
-              ip, port = str(p["ip"]), str(p["port"])
-              for scheme in ("http", "https"):
-                  proxy = f"{scheme}://{ip}:{port}"
-                  try:
-                      avg = probe(TEST_URLS, proxy=proxy)
-                  except Exception:
-                      continue
-                  if avg:
-                      return (avg, ip, port, scheme)
-              return None
-
           results = []
-          with ThreadPoolExecutor(max_workers=20) as ex:
-              futs = {ex.submit(worker, p): p for p in proxies}
+          stats = Counter()
+          with ThreadPoolExecutor(max_workers=30) as ex:
+              futs = [ex.submit(probe_mihoyo, p) for p in proxies]
               for f in as_completed(futs):
-                  res = f.result()
-                  if res:
-                      results.append(res)
+                  rres = f.result()
+                  stats[rres[2]] += 1
+                  if rres[2] == "ALL_OK":
+                      results.append(rres)
 
-          results.sort()
-          print(f"\n===== 可用代理（三域名全通）{len(results)} 个 =====")
-          for avg, ip, port, scheme in results:
-              print(f"{scheme}://{ip}:{port}  avg={avg:.2f}s")
+          results.sort(key=lambda x: x[3])
+          print(f"\n=== 分类统计 ===")
+          for k, v in stats.items():
+              print(f"{k}: {v}")
+          print(f"\n=== 可用代理 {len(results)} 个 ===")
+          for proxy, proto, tag, avg in results[:30]:
+              print(f"{proxy} [{proto}] avg={avg:.2f}s")
 
+          usable = [{"proxy": r[0], "protocol": r[1], "avg_seconds": round(r[3], 3)} for r in results]
           json.dump(
-              {
-                  "fetched": len(proxies),
-                  "direct_avg": round(direct_avg, 3) if direct_avg else None,
-                  "usable": [
-                      {"proxy": f"{s}://{ip}:{port}", "avg_seconds": round(avg, 3)}
-                      for avg, ip, port, s in results
-                  ],
-              },
+              {"fetched": len(proxies), "stats": dict(stats), "usable": usable},
               open("proxy_test_result.json", "w", encoding="utf-8"),
-              ensure_ascii=False,
-              indent=2,
+              ensure_ascii=False, indent=2,
           )
 
-          lines = ["站大爷免费代理 Actions 测活"]
+          lines = ["站大爷免费代理 Actions 测活（修正域名版本）"]
           lines.append(f"拉取代理数: {len(proxies)}")
-          lines.append("直连基准: " + (f"avg={direct_avg:.2f}s" if direct_avg else "不通"))
-          lines.append(f"可用代理(三域名全通): {len(results)} 个")
+          for k, v in stats.items():
+              lines.append(f"{k}: {v}")
           if results:
-              for avg, ip, port, scheme in results[:10]:
-                  lines.append(f"{scheme}://{ip}:{port} avg={avg:.2f}s")
+              lines.append(f"可用: {len(results)} 个")
+              for r in results[:10]:
+                  lines.append(f"{r[0]} [{r[1]}] avg={r[3]:.2f}s")
           else:
-              lines.append("无可用代理：免费代理在 Actions 环境不可连通米游社")
+              lines.append("无可用代理")
           with open("result.txt", "w", encoding="utf-8") as f:
               f.write("\n".join(lines))
           print("\n[result.txt 已生成]")
