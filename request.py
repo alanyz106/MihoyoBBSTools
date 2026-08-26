@@ -2,11 +2,21 @@ import os
 import sys
 
 
-def _get_env_proxy():
+def _get_proxy_url():
     for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
         value = os.environ.get(key)
         if value:
             return value
+    try:
+        import config as cfg
+        proxy_url = cfg.config.get("proxy") if isinstance(cfg.config, dict) else None
+    except Exception:
+        return None
+    else:
+        if proxy_url:
+            os.environ.setdefault("HTTPS_PROXY", proxy_url)
+            os.environ.setdefault("HTTP_PROXY", proxy_url)
+            return proxy_url
     return None
 
 
@@ -15,7 +25,7 @@ def get_new_session(**kwargs):
         # 优先使用httpx，在httpx无法使用的环境下使用requests
         import httpx
 
-        proxy_url = kwargs.pop("proxy", None) or _get_env_proxy()
+        proxy_url = kwargs.pop("proxy", None) or _get_proxy_url()
         transport_kwargs = {"retries": 10}
         if proxy_url:
             transport_kwargs["proxy"] = proxy_url
@@ -59,4 +69,18 @@ def get_new_session_use_proxy(http_proxy: str):
         return session
 
 
-http = get_new_session()
+class _LazyClient:
+    def __init__(self, factory):
+        self._factory = factory
+        self._client = None
+
+    def _get(self):
+        if self._client is None:
+            self._client = self._factory()
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+
+http = _LazyClient(get_new_session)

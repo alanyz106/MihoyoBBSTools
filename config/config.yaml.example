@@ -2,6 +2,8 @@
 enable: true
 #config的版本
 version: 15
+# HTTP 代理（如 http://127.0.0.1:7890），留空则直连；海外服务器访问国内 API 可配置
+proxy: ''
 # todo功能
 push: ""
 account:

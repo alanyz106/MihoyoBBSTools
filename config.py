@@ -12,6 +12,7 @@ update_config_need = False
 
 config = {
     'enable': True, 'version': 15, "push": "",
+    "proxy": "",
     'account': {'cookie': '', 'stuid': '', 'stoken': '', 'mid': ''},
     'device': {'name': 'Xiaomi MI 6', 'model': 'Mi 6', 'id': '', 'fp': ''},
     'mihoyobbs': {
