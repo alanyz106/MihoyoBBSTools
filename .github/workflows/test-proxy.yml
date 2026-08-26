@@ -1,0 +1,168 @@
+name: Test Free Proxy Connectivity
+
+# 手动触发的测试工作流：在 GitHub Actions runner（海外）上拉取站大爷免费代理，
+# 逐个测活是否能连通米游社关键域名，用于验证免费代理方案在 Actions 环境是否可行。
+# 本地测通不算数，必须以本工作流在 runner 上的结果为准。
+#
+# 前置：需在仓库 Settings -> Secrets 添加 ZDAYE_APP_ID / ZDAYE_AKEY。
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install httpx
+        run: pip install httpx
+
+      - name: Fetch & probe proxies
+        env:
+          ZDAYE_APP_ID: ${{ secrets.ZDAYE_APP_ID }}
+          ZDAYE_AKEY: ${{ secrets.ZDAYE_AKEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          import httpx
+
+          APP_ID = os.environ.get("ZDAYE_APP_ID", "")
+          AKEY = os.environ.get("ZDAYE_AKEY", "")
+          if not APP_ID or not AKEY:
+              print("ERROR: 缺少 secrets ZDAYE_APP_ID / ZDAYE_AKEY，请在仓库 Settings -> Secrets 添加后重试")
+              raise SystemExit(1)
+
+          API_URL = "http://www.zdopen.com/FreeProxy/Get/"
+          API_PARAMS = {
+              "app_id": APP_ID,
+              "akey": AKEY,
+              "count": 100,
+              "dalu": 1,
+              "level_type": 1,
+              "lastcheck_type": 4,
+              "sleep_type": 3,
+              "return_type": 3,
+          }
+
+          TEST_URLS = [
+              "https://bbs.mihoyo.com/bbs_api/getUserBoardSignInfo",
+              "https://api-takumi.mihoyo.com/",
+              "https://api-takumi-record.mihoyo.com/",
+          ]
+
+          def probe(urls, proxy=None):
+              with httpx.Client(proxy=proxy, timeout=6, follow_redirects=True) as c:
+                  total = 0.0
+                  for u in urls:
+                      t0 = time.time()
+                      r = c.get(u)
+                      dt = time.time() - t0
+                      if r.status_code >= 500:
+                          return None
+                      total += dt
+              return total / len(urls)
+
+          # 直连基准：agent 海外直连国内 API 的现状
+          direct_avg = None
+          try:
+              direct_avg = probe(TEST_URLS)
+              print(f"[直连基准] avg={direct_avg:.2f}s" if direct_avg else "[直连基准] 失败")
+          except Exception as e:
+              print(f"[直连基准] 异常: {e}")
+
+          r = httpx.get(API_URL, params=API_PARAMS, timeout=20)
+          data = r.json()
+          print(f"[拉取] API code={data.get('code')}")
+          proxies = data.get("data", {}).get("proxy_list", [])
+          print(f"[拉取] 共 {len(proxies)} 个代理")
+
+          def worker(p):
+              ip, port = str(p["ip"]), str(p["port"])
+              for scheme in ("http", "https"):
+                  proxy = f"{scheme}://{ip}:{port}"
+                  try:
+                      avg = probe(TEST_URLS, proxy=proxy)
+                  except Exception:
+                      continue
+                  if avg:
+                      return (avg, ip, port, scheme)
+              return None
+
+          results = []
+          with ThreadPoolExecutor(max_workers=20) as ex:
+              futs = {ex.submit(worker, p): p for p in proxies}
+              for f in as_completed(futs):
+                  res = f.result()
+                  if res:
+                      results.append(res)
+
+          results.sort()
+          print(f"\n===== 可用代理（三域名全通）{len(results)} 个 =====")
+          for avg, ip, port, scheme in results:
+              print(f"{scheme}://{ip}:{port}  avg={avg:.2f}s")
+
+          json.dump(
+              {
+                  "fetched": len(proxies),
+                  "direct_avg": round(direct_avg, 3) if direct_avg else None,
+                  "usable": [
+                      {"proxy": f"{s}://{ip}:{port}", "avg_seconds": round(avg, 3)}
+                      for avg, ip, port, s in results
+                  ],
+              },
+              open("proxy_test_result.json", "w", encoding="utf-8"),
+              ensure_ascii=False,
+              indent=2,
+          )
+
+          lines = ["站大爷免费代理 Actions 测活"]
+          lines.append(f"拉取代理数: {len(proxies)}")
+          lines.append("直连基准: " + (f"avg={direct_avg:.2f}s" if direct_avg else "不通"))
+          lines.append(f"可用代理(三域名全通): {len(results)} 个")
+          if results:
+              for avg, ip, port, scheme in results[:10]:
+                  lines.append(f"{scheme}://{ip}:{port} avg={avg:.2f}s")
+          else:
+              lines.append("无可用代理：免费代理在 Actions 环境不可连通米游社")
+          with open("result.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          print("\n[result.txt 已生成]")
+          PY
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-test-result-${{ github.run_id }}
+          path: |
+            proxy_test_result.json
+            result.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Push result via wxpusher
+        if: always()
+        env:
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+          WXPUSHER_UIDS: ${{ secrets.WXPUSHER_UIDS }}
+        run: |
+          if [ -f result.txt ]; then
+            CONTENT=$(cat result.txt)
+          else
+            CONTENT="代理测活未生成结果（脚本可能提前失败，请看 Actions 日志）"
+          fi
+          CONTENT=$(echo "$CONTENT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+          curl -s -X POST "https://wxpusher.zjiecode.com/api/send/message" \
+            -H "Content-Type: application/json" \
+            -d "{\"appToken\":\"$WXPUSHER_APP_TOKEN\",\"content\":$CONTENT,\"summary\":\"代理连通性测试\",\"contentType\":1,\"uids\":[\"$WXPUSHER_UIDS\"]}"
