@@ -72,7 +72,7 @@ jobs:
         run: |
           set +e
           # 设置整体超时，避免网络异常时无限挂起占用 runner
-          timeout 360 python main.py 2>&1 | tee output.log
+          timeout 900 python main.py 2>&1 | tee output.log
           echo "result<<EOF" >> $GITHUB_OUTPUT
           cat output.log >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
