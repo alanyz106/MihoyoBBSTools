@@ -1,4 +1,13 @@
+import os
 import sys
+
+
+def _get_env_proxy():
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
 
 
 def get_new_session(**kwargs):
@@ -6,7 +15,12 @@ def get_new_session(**kwargs):
         # 优先使用httpx，在httpx无法使用的环境下使用requests
         import httpx
 
-        http_client = httpx.Client(timeout=30, transport=httpx.HTTPTransport(retries=10), follow_redirects=True,
+        proxy_url = kwargs.pop("proxy", None) or _get_env_proxy()
+        transport_kwargs = {"retries": 10}
+        if proxy_url:
+            transport_kwargs["proxy"] = proxy_url
+        http_client = httpx.Client(timeout=30, transport=httpx.HTTPTransport(**transport_kwargs),
+                                   follow_redirects=True,
                                    **kwargs)
         # 当openssl版本小于1.0.2的时候直接进行一个空请求让httpx报错
         import tools
