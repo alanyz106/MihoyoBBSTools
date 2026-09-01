@@ -328,8 +328,22 @@ def _solve_via_2captcha(gt: str, challenge: str, page_url: str):
 
 
 def _remote_api_url() -> str:
-    """自建验证码推理服务器地址（GEETEST_API_URL），形如 https://xxx/captcha，设置后优先于本地 CV"""
-    return os.getenv("GEETEST_API_URL", "").strip().rstrip("/")
+    """
+    自建验证码推理服务器地址（GEETEST_API_URL），设置后优先于本地 CV。
+
+    支持两种写法，会自动规范成破解接口的 base：
+      - 规范前缀：https://host/geetest/v3/nine_pic   （推荐，2026-08-31 起）
+      - 旧前缀  ：https://host/captcha              （已废弃，nginx 侧 308 跳转到规范前缀）
+    末尾斜杠可省略；误填成 .../captcha/ 也能自动收敛到 /geetest/v3/nine_pic。
+    """
+    raw = os.getenv("GEETEST_API_URL", "").strip().rstrip("/")
+    if not raw:
+        return ""
+    # 旧前缀自动升级到规范前缀，避免 nginx 308 重定向（httpx 默认不跟随 308）
+    for old in ("/captcha", "/geetest/v3/nine_pic"):
+        if raw == old or raw.endswith(old):
+            return raw[: -len(old)] + "/geetest/v3/nine_pic"
+    return raw
 
 
 def _remote_api_key() -> str:
@@ -356,12 +370,29 @@ def _solve_via_remote_api(gt: str, challenge: str):
     api_key = _remote_api_key()
     if api_key:
         headers["X-API-Key"] = api_key
-    client = httpx.Client(timeout=120, headers=headers)
+    # follow_redirects=True：服务器侧前缀迁移（如 /captcha → /geetest/v3/nine_pic）会返回
+    # 301/308，httpx 默认不跟随，会把重定向页当响应，导致"服务挂了"的假象。
+    client = httpx.Client(timeout=120, headers=headers, follow_redirects=True)
     try:
-        log.info("正在调用自建验证码 API...")
+        log.info(f"正在调用自建验证码 API... ({base}/crack_it)")
         resp = client.get(f"{base}/crack_it", params={"gt": gt, "challenge": challenge})
         if resp.status_code != 200:
-            log.warning(f"自建验证码 API 返回异常: HTTP {resp.status_code}, {resp.text[:200]}")
+            # 3xx：重定向链没走通，多半是路径前缀不对，提示实际打到的地址
+            if 300 <= resp.status_code < 400:
+                location = resp.headers.get("location", "(无 Location 头)")
+                log.warning(
+                    f"自建验证码 API 返回重定向 HTTP {resp.status_code}，未被自动处理；"
+                    f"目标={location}。请检查 GEETEST_API_URL 是否指向规范前缀 "
+                    f"/geetest/v3/nine_pic（当前 base={base}）"
+                )
+            # 401/403：API Key 有问题，明确提示，避免被误判为服务不可用
+            elif resp.status_code in (401, 403):
+                log.warning(
+                    f"自建验证码 API 鉴权失败 HTTP {resp.status_code}："
+                    f"请检查 secret GEETEST_API_KEY 是否有效（响应: {resp.text[:120]}）"
+                )
+            else:
+                log.warning(f"自建验证码 API 返回异常: HTTP {resp.status_code}, {resp.text[:200]}")
             return None
         data = resp.json()
         result_data = data.get("data", {})
