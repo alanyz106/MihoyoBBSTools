@@ -29,7 +29,10 @@ def get_new_session(**kwargs):
         transport_kwargs = {"retries": 10}
         if proxy_url:
             transport_kwargs["proxy"] = proxy_url
-        http_client = httpx.Client(timeout=30, transport=httpx.HTTPTransport(**transport_kwargs),
+        # 拉长读超时：米游社 bbs_captcha_verify 回传验证码时偶发 50s+ 卡顿，
+        # 默认 30s 会触发 httpx.ReadTimeout 导致签到半截崩溃（见 2026-09-02 日志）。
+        http_client = httpx.Client(timeout=httpx.Timeout(connect=30, read=120, write=30, pool=30),
+                                   transport=httpx.HTTPTransport(**transport_kwargs),
                                    follow_redirects=True,
                                    **kwargs)
         # 当openssl版本小于1.0.2的时候直接进行一个空请求让httpx报错

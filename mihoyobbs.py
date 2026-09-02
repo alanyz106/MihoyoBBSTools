@@ -93,12 +93,22 @@ class Mihoyobbs:
             else:
                 validate = captcha_result
 
-            check_req = http.post(url=setting.bbs_captcha_verify, headers=self.headers,
-                                  json={"geetest_challenge": challenge,
-                                        "geetest_seccode": validate + "|jordan",
-                                        "geetest_validate": validate})
-            check = check_req.json()
-            if check["retcode"] == 0:
+            check = None
+            # 米游社 bbs_captcha_verify 偶发 50s+ 读超时，单次失败会让整个签到半截崩溃；
+            # 这里本地重试兜底（最多 3 次，指数退避），见 2026-09-02 日志。
+            for attempt in range(3):
+                try:
+                    check_req = http.post(url=setting.bbs_captcha_verify, headers=self.headers,
+                                          json={"geetest_challenge": challenge,
+                                                "geetest_seccode": validate + "|jordan",
+                                                "geetest_validate": validate})
+                    check = check_req.json()
+                    break
+                except Exception as exc:
+                    log.warning(f"验证码回传第 {attempt + 1} 次失败: {exc}")
+                    if attempt < 2:
+                        time.sleep(3 * (attempt + 1))
+            if check is not None and check.get("retcode") == 0:
                 return check["data"]["challenge"]
         return None
 
