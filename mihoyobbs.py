@@ -297,6 +297,11 @@ class Mihoyobbs:
 
     def run_task(self):
         return_data = "米游社: "
+        # 强制禁用 BBS 帖子浏览/点赞/分享任务（仅保留社区签到拿基础币），避免耗时。
+        # bbs_config 来自 config.config["mihoyobbs"]，post_task 据此决定是否浏览帖子，
+        # 在此统一关掉，无论 CONFIG_YAML 或 get_tasks_list 怎么设都会被覆盖。
+        for _k in ("read", "like", "share", "cancel_like"):
+            self.bbs_config[_k] = False
         if self.task_do["sign"] and self.task_do["read"] and self.task_do["like"] and \
                 self.task_do["share"]:
             return_data += "\n" + f"今天已经全部完成了！\n" \

@@ -143,6 +143,12 @@ def load_config(p_path=None):
     # 去除cookie最末尾的空格
     data["account"]["cookie"] = str(data["account"]["cookie"]).rstrip(' ')
     config = data
+    # 强制禁用 BBS 帖子浏览/点赞/分享任务（仅保留社区签到拿基础币），避免耗时。
+    # 用强制覆盖而非改 secret：无论 CONFIG_YAML 里怎么写，加载后都关掉这三项目。
+    if isinstance(config.get("mihoyobbs"), dict):
+        for _k in ("read", "like", "share"):
+            config["mihoyobbs"][_k] = False
+        config["mihoyobbs"]["cancel_like"] = False
     log.info("Config 加载完毕")
     return data
 
