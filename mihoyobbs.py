@@ -66,14 +66,34 @@ class Mihoyobbs:
             "like_num": 5,
             "share": False
         }
+        self.postsList = []
         self.get_tasks_list()
-        # 如果这三个任务都做了就没必要获取帖子了
-        if self.task_do["read"] and self.task_do["like"] and self.task_do["share"]:
+        # 如果这三个任务都做了就没必要获取帖子了。
+        # 另外：帖子任务若被配置整体禁用（read/like/share 全 False，config.py
+        # load_config 会强制关掉它们），post_task 里每个动作都会因 bbs_config
+        # 为 False 而跳过，拉列表纯粹是白跑一次 HTTP 请求 —— 一并省掉。
+        # 注意 postsList 已初始化为 []，跳过时 post_task 遍历空列表是安全的。
+        _posts_disabled = not (
+            self.bbs_config["read"]
+            or self.bbs_config["like"]
+            or self.bbs_config["share"]
+        )
+        if _posts_disabled:
+            log.info("帖子任务（看帖/点赞/分享）已禁用，跳过获取帖子列表")
+        elif self.task_do["read"] and self.task_do["like"] and self.task_do["share"]:
             pass
         else:
             self.postsList = self.get_list()
 
     def refresh_list(self) -> None:
+        # 与 __init__ 同一判定：帖子任务整体禁用时不再重新拉列表。
+        if not (
+            self.bbs_config["read"]
+            or self.bbs_config["like"]
+            or self.bbs_config["share"]
+        ):
+            self.postsList = []
+            return
         self.postsList = self.get_list()
 
     def get_max_req_post_num(self):
